@@ -468,7 +468,7 @@ def logout(response: Response, _user=Depends(require_csrf)):
 # ---------------- MFA (2FA) ---------------- 
 
 @app.post("/api/auth/mfa/setup", response_model=MfaSetupResponse)
-def mfa_setup(user=Depends(require_csrf), request: Request):
+def mfa_setup(request: Request, user=Depends(require_csrf)):
     """Generate MFA secret and QR code for setup."""
     import time
     if not MFA_ENABLED:
