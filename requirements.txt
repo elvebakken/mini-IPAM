@@ -1,0 +1,12 @@
+fastapi==0.115.6
+uvicorn==0.34.0
+pydantic==2.10.4
+python-multipart==0.0.20
+bcrypt==4.1.2
+itsdangerous==2.2.0
+portalocker==2.10.1
+pillow==11.0.0
+openpyxl==3.1.5
+cairosvg==2.7.1
+pyotp==2.9.0
+qrcode[pil]==7.4.2

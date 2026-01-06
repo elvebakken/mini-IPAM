@@ -1,0 +1,26 @@
+services:
+  mini-ipam:
+    build: .
+    container_name: mini-ipam
+    environment:
+      - DATA_DIR=/data
+      - SECRET_KEY=change-me-to-a-long-random-string
+      # Set COOKIE_SECURE=true in production when using HTTPS
+      # For development, set to false
+      - COOKIE_SECURE=false
+      # MFA Configuration
+      # Set MFA_ENABLED=true to enable MFA functionality
+      # Set MFA_ENFORCE_ALL=true to require MFA for all users (automatically enables MFA_ENABLED)
+      - MFA_ENABLED=${MFA_ENABLED:-false}
+      - MFA_ENFORCE_ALL=${MFA_ENFORCE_ALL:-false}
+      # Audit Log Configuration
+      # Audit log retention period in days (logs older than this will be automatically deleted)
+      # Default: 90 days
+      - AUDIT_LOG_RETENTION_DAYS=${AUDIT_LOG_RETENTION_DAYS:-90}
+    volumes:
+      - ./appdata:/data
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    # Note: For production with HTTPS, deploy behind a reverse proxy (nginx, Traefik, Caddy)
+    # that handles TLS termination. Set COOKIE_SECURE=true in production.

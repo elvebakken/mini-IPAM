@@ -1,0 +1,128 @@
+/* tiny extras */
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+
+/* Typography Scale */
+.text-xs { font-size: 0.75rem; line-height: 1rem; }
+.text-sm { font-size: 0.875rem; line-height: 1.25rem; }
+.text-base { font-size: 1rem; line-height: 1.5rem; }
+.text-lg { font-size: 1.125rem; line-height: 1.75rem; }
+.text-xl { font-size: 1.25rem; line-height: 1.75rem; }
+.text-2xl { font-size: 1.5rem; line-height: 2rem; }
+.text-3xl { font-size: 1.875rem; line-height: 2.25rem; }
+
+/* Consistent Spacing System */
+/* Using Tailwind's spacing scale: 0.25rem (1), 0.5rem (2), 0.75rem (3), 1rem (4), 1.25rem (5), 1.5rem (6), 2rem (8), 2.5rem (10), 3rem (12), 4rem (16) */
+/* Applied via Tailwind classes, but ensuring consistency in custom components */
+
+/* Smooth Transitions for Interactive Elements */
+button, a, input, select, textarea {
+  transition-property: color, background-color, border-color, opacity, transform, box-shadow;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
+}
+
+/* Enhanced Hover States */
+button:hover, a:hover {
+  transition-duration: 200ms;
+}
+
+/* Subtle Animations for State Changes */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.2s ease-out;
+}
+
+.animate-slideIn {
+  animation: slideIn 0.3s ease-out;
+}
+
+.animate-slideUp {
+  animation: slideUp 0.3s ease-out;
+}
+
+.animate-scaleIn {
+  animation: scaleIn 0.2s ease-out;
+}
+
+/* Enhanced Button Hover Effects */
+button {
+  position: relative;
+  overflow: hidden;
+}
+
+button:active {
+  transform: scale(0.98);
+  transition-duration: 100ms;
+}
+
+/* Smooth transitions for table rows */
+tr {
+  transition: background-color 150ms ease-out;
+}
+
+/* Smooth transitions for cards */
+.bg-zinc-900, .bg-zinc-950 {
+  transition: background-color 200ms ease-out, border-color 200ms ease-out;
+}
+
+/* Line clamp utility for card view */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
