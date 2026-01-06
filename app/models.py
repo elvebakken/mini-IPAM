@@ -135,16 +135,17 @@ class PasswordStrengthRequest(BaseModel):
     password: str
 
 class MfaSetupResponse(BaseModel):
-    secret: str  # Base32 secret for manual entry
+    session_key: str  # Session key to use for complete-setup (replaces secret)
     qr_code: str  # Base64 encoded QR code image
-    manual_entry_key: str  # Formatted secret for manual entry
+    manual_entry_key: str  # Formatted secret for manual entry (for display only)
 
 class MfaVerifySetupRequest(BaseModel):
     code: str  # 6-digit TOTP code to verify setup
 
 class MfaCompleteSetupRequest(BaseModel):
-    secret: str  # Base32 secret from setup
+    session_key: str  # Session key from setup endpoint
     code: str  # 6-digit TOTP code to verify setup
+    secret: Optional[str] = None  # Deprecated - kept for backward compatibility, ignored
 
 class MfaVerifyRequest(BaseModel):
     code: str  # 6-digit TOTP code for login
@@ -162,8 +163,9 @@ class MfaSetupDuringLoginRequest(BaseModel):
 class MfaCompleteSetupAndLoginRequest(BaseModel):
     username: str
     password: str  # Password verification required for security
-    secret: str  # Base32 secret from setup
+    session_key: str  # Session key from setup endpoint
     code: str  # 6-digit TOTP code to verify setup
+    secret: Optional[str] = None  # Deprecated - kept for backward compatibility, ignored
 
 class PatchUserRequest(BaseModel):
     """Request model for updating user properties (admin only)."""
@@ -174,3 +176,7 @@ class PatchUserRequest(BaseModel):
 class AdminChangePasswordRequest(BaseModel):
     """Request model for admin changing another user's password."""
     new_password: str
+
+class AdminRecoverMfaRequest(BaseModel):
+    """Request model for admin recovering a user's MFA (disables MFA and clears secret)."""
+    confirm: bool = Field(default=False, description="Must be true to confirm recovery action")

@@ -25,7 +25,8 @@ from .models import (
     PasswordStrengthRequest, Vlan, Assignment, User,
     MfaSetupResponse, MfaCompleteSetupRequest, MfaDisableRequest,
     MfaSetupDuringLoginRequest, MfaCompleteSetupAndLoginRequest,
-    MfaVerifyExportRequest, PatchUserRequest, AdminChangePasswordRequest
+    MfaVerifyExportRequest, PatchUserRequest, AdminChangePasswordRequest,
+    AdminRecoverMfaRequest
 )
 from .storage import ensure_files, ensure_admin_user, load_data, save_data, load_users, save_users
 from .auth import (
@@ -63,6 +64,35 @@ ensure_files(DATA_DIR)
 _used_export_tokens: Dict[str, float] = {}
 # Lock to prevent race conditions when checking and marking tokens as used
 _export_token_lock = threading.Lock()
+
+# MFA Setup Session Storage
+# Key: session_key (string), Value: {secret, username, created_at, expires_at}
+_mfa_setup_sessions: Dict[str, Dict] = {}
+_mfa_setup_lock = threading.Lock()
+
+def _get_mfa_setup_session_key(user: dict) -> str:
+    """Generate unique session key for MFA setup."""
+    import time
+    return f"{user['u']}_{int(time.time()*1000)}_{secrets.token_hex(8)}"
+
+def _get_user_setup_session(username: str) -> Optional[str]:
+    """Get active setup session key for user."""
+    import time
+    now = time.time()
+    with _mfa_setup_lock:
+        for key, session in _mfa_setup_sessions.items():
+            if session['username'] == username and session['expires_at'] > now:
+                return key
+    return None
+
+def _cleanup_expired_mfa_sessions():
+    """Remove expired MFA setup sessions."""
+    import time
+    now = time.time()
+    with _mfa_setup_lock:
+        expired_keys = [k for k, v in _mfa_setup_sessions.items() if v['expires_at'] < now]
+        for key in expired_keys:
+            _mfa_setup_sessions.pop(key, None)
 
 def _hash_token(token: str) -> str:
     """Generate a SHA256 hash of the token for tracking."""
@@ -438,21 +468,48 @@ def logout(response: Response, _user=Depends(require_csrf)):
 # ---------------- MFA (2FA) ---------------- 
 
 @app.post("/api/auth/mfa/setup", response_model=MfaSetupResponse)
-def mfa_setup(user=Depends(require_csrf)):
+def mfa_setup(user=Depends(require_csrf), request: Request):
     """Generate MFA secret and QR code for setup."""
+    import time
     if not MFA_ENABLED:
         error_msg = "MFA is not enabled"
         if MFA_ENFORCE_ALL:
             error_msg += " (MFA_ENFORCE_ALL is set but MFA_ENABLED is False - please restart the application)"
         raise HTTPException(status_code=403, detail=error_msg)
     
+    # Add rate limiting
+    client_ip = get_client_ip(request)
+    username = user["u"]
+    allowed, error_msg = check_rate_limit(DATA_DIR, client_ip, username)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=error_msg)
+    
     users_file = load_users(DATA_DIR)
     db_user = next((u for u in users_file.users if u.username == user["u"]), None)
     if not db_user or db_user.disabled:
         raise HTTPException(status_code=404, detail="User not found")
     
+    # Check for existing active setup session and invalidate it
+    existing_session_key = _get_user_setup_session(user['u'])
+    if existing_session_key:
+        with _mfa_setup_lock:
+            _mfa_setup_sessions.pop(existing_session_key, None)
+    
     # Generate new secret
     secret = generate_mfa_secret()
+    
+    # Store secret in server-side session
+    session_key = _get_mfa_setup_session_key(user)
+    with _mfa_setup_lock:
+        _mfa_setup_sessions[session_key] = {
+            "secret": secret,
+            "username": user["u"],
+            "created_at": time.time(),
+            "expires_at": time.time() + 600  # 10 minutes
+        }
+    
+    # Cleanup expired sessions
+    _cleanup_expired_mfa_sessions()
     
     # Generate QR code
     qr_code_b64 = generate_mfa_qr_code(secret, db_user.username)
@@ -461,7 +518,7 @@ def mfa_setup(user=Depends(require_csrf)):
     manual_entry_key = format_mfa_secret_for_display(secret)
     
     return {
-        "secret": secret,
+        "session_key": session_key,
         "qr_code": qr_code_b64,
         "manual_entry_key": manual_entry_key
     }
@@ -469,12 +526,10 @@ def mfa_setup(user=Depends(require_csrf)):
 
 @app.post("/api/auth/mfa/complete-setup")
 def mfa_complete_setup(payload: MfaCompleteSetupRequest, user=Depends(require_csrf)):
-    """Complete MFA setup: verify code and enable MFA with the provided secret."""
+    """Complete MFA setup: verify code and enable MFA with the stored secret."""
+    import time
     if not MFA_ENABLED:
         raise HTTPException(status_code=403, detail="MFA is not enabled")
-    
-    secret = payload.secret
-    code = payload.code
     
     users_file = load_users(DATA_DIR)
     db_user = next((u for u in users_file.users if u.username == user["u"]), None)
@@ -483,15 +538,42 @@ def mfa_complete_setup(payload: MfaCompleteSetupRequest, user=Depends(require_cs
     
     # Check if user already has MFA enabled
     if getattr(db_user, 'mfa_enabled', False):
-        raise HTTPException(status_code=400, detail="MFA is already enabled for this user")
+        raise HTTPException(status_code=400, detail="MFA setup cannot be completed")
     
-    # Verify the code matches the secret
+    # Get session key from payload
+    session_key = payload.session_key
+    
+    # Look up stored secret from server-side session
+    with _mfa_setup_lock:
+        if session_key not in _mfa_setup_sessions:
+            raise HTTPException(status_code=400, detail="MFA setup session expired or invalid")
+        
+        setup_session = _mfa_setup_sessions[session_key]
+    
+    # Validate session
+    if setup_session['username'] != user['u']:
+        raise HTTPException(status_code=403, detail="Invalid session")
+    
+    if setup_session['expires_at'] < time.time():
+        with _mfa_setup_lock:
+            _mfa_setup_sessions.pop(session_key, None)
+        raise HTTPException(status_code=400, detail="MFA setup session expired")
+    
+    # Use stored secret, not provided secret (if any)
+    secret = setup_session['secret']
+    code = payload.code
+    
+    # Verify code matches stored secret
     if not verify_mfa_code(secret, code):
         raise HTTPException(status_code=400, detail="Invalid verification code")
     
     # Enable MFA
     db_user.mfa_enabled = True
     db_user.mfa_secret = secret
+    
+    # Clear setup session
+    with _mfa_setup_lock:
+        _mfa_setup_sessions.pop(session_key, None)
     
     save_users(DATA_DIR, users_file)
     audit(user, "user.mfa_enable", "user", db_user.id, None, None, {"mfa_enabled": True})
@@ -539,6 +621,7 @@ def mfa_setup_during_login(payload: MfaSetupDuringLoginRequest, request: Request
     Requires password verification for security.
     This endpoint is used when MFA_ENFORCE_ALL is enabled and user hasn't set up MFA yet.
     """
+    import time
     if not MFA_ENABLED:
         raise HTTPException(status_code=403, detail="MFA is not enabled")
     
@@ -571,8 +654,27 @@ def mfa_setup_during_login(payload: MfaSetupDuringLoginRequest, request: Request
     if getattr(user, 'mfa_enabled', False) and getattr(user, 'mfa_secret', None):
         raise HTTPException(status_code=400, detail="MFA is already enabled for this user")
     
+    # Check for existing active setup session and invalidate it
+    existing_session_key = _get_user_setup_session(username)
+    if existing_session_key:
+        with _mfa_setup_lock:
+            _mfa_setup_sessions.pop(existing_session_key, None)
+    
     # Generate new secret
     secret = generate_mfa_secret()
+    
+    # Store secret in server-side session
+    session_key = f"{username}_{int(time.time()*1000)}_{secrets.token_hex(8)}"
+    with _mfa_setup_lock:
+        _mfa_setup_sessions[session_key] = {
+            "secret": secret,
+            "username": username,
+            "created_at": time.time(),
+            "expires_at": time.time() + 600  # 10 minutes
+        }
+    
+    # Cleanup expired sessions
+    _cleanup_expired_mfa_sessions()
     
     # Generate QR code
     qr_code_b64 = generate_mfa_qr_code(secret, user.username)
@@ -581,7 +683,7 @@ def mfa_setup_during_login(payload: MfaSetupDuringLoginRequest, request: Request
     manual_entry_key = format_mfa_secret_for_display(secret)
     
     return {
-        "secret": secret,
+        "session_key": session_key,
         "qr_code": qr_code_b64,
         "manual_entry_key": manual_entry_key
     }
@@ -594,6 +696,7 @@ def mfa_complete_setup_and_login(payload: MfaCompleteSetupAndLoginRequest, reque
     Verifies password, sets up MFA, and logs the user in.
     This endpoint is used when MFA_ENFORCE_ALL is enabled and user is setting up MFA for the first time.
     """
+    import time
     if not MFA_ENABLED:
         raise HTTPException(status_code=403, detail="MFA is not enabled")
     
@@ -622,14 +725,43 @@ def mfa_complete_setup_and_login(payload: MfaCompleteSetupAndLoginRequest, reque
         record_failed_attempt(DATA_DIR, client_ip, username)
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    # Verify MFA code matches the secret
-    if not verify_mfa_code(payload.secret, payload.code):
+    # Get session key from payload
+    session_key = payload.session_key
+    
+    # Look up stored secret from server-side session
+    with _mfa_setup_lock:
+        if session_key not in _mfa_setup_sessions:
+            record_failed_attempt(DATA_DIR, client_ip, username)
+            raise HTTPException(status_code=400, detail="MFA setup session expired or invalid")
+        
+        setup_session = _mfa_setup_sessions[session_key]
+    
+    # Validate session
+    if setup_session['username'] != username:
+        record_failed_attempt(DATA_DIR, client_ip, username)
+        raise HTTPException(status_code=403, detail="Invalid session")
+    
+    if setup_session['expires_at'] < time.time():
+        with _mfa_setup_lock:
+            _mfa_setup_sessions.pop(session_key, None)
+        record_failed_attempt(DATA_DIR, client_ip, username)
+        raise HTTPException(status_code=400, detail="MFA setup session expired")
+    
+    # Use stored secret, not provided secret (if any)
+    secret = setup_session['secret']
+    
+    # Verify MFA code matches the stored secret
+    if not verify_mfa_code(secret, payload.code):
         record_failed_attempt(DATA_DIR, client_ip, username)
         raise HTTPException(status_code=400, detail="Invalid verification code")
     
     # Enable MFA for the user
     user.mfa_enabled = True
-    user.mfa_secret = payload.secret
+    user.mfa_secret = secret
+    
+    # Clear setup session
+    with _mfa_setup_lock:
+        _mfa_setup_sessions.pop(session_key, None)
     
     # Check if password is expired
     password_expired, expiration_date = is_password_expired(user.password_changed_at)
@@ -884,10 +1016,21 @@ def create_user(payload: CreateUserRequest, user=Depends(require_csrf_and_role({
     
     # Include MFA setup data if MFA was enabled
     if mfa_enabled:
+        import time
+        # Store secret in server-side session
+        session_key = f"{username}_{int(time.time()*1000)}_{secrets.token_hex(8)}"
+        with _mfa_setup_lock:
+            _mfa_setup_sessions[session_key] = {
+                "secret": mfa_secret,
+                "username": username,
+                "created_at": time.time(),
+                "expires_at": time.time() + 600  # 10 minutes
+            }
+        
         response_data["mfa_setup"] = {
+            "session_key": session_key,
             "qr_code": mfa_qr_code,
-            "manual_entry_key": mfa_manual_entry_key,
-            "secret": mfa_secret
+            "manual_entry_key": mfa_manual_entry_key
         }
     
     return response_data
@@ -984,6 +1127,62 @@ def admin_change_user_password(user_id: str, payload: AdminChangePasswordRequest
     save_users(DATA_DIR, users_file)
     audit(user, "user.password_change_admin", "user", db_user.id, None, None, {"password_changed": True})
     return {"ok": True}
+
+
+@app.post("/api/users/{user_id}/recover-mfa")
+def admin_recover_user_mfa(user_id: str, payload: AdminRecoverMfaRequest, user=Depends(require_csrf_and_role({"admin"}))):
+    """
+    Recover a user's MFA account by disabling MFA and clearing the secret (admin only).
+    
+    This endpoint allows administrators to help users who are locked out due to:
+    - Lost or broken authenticator device
+    - MFA state inconsistency
+    - Other MFA-related issues
+    
+    The recovery action:
+    - Disables MFA for the user
+    - Clears the MFA secret
+    - Allows the user to log in without MFA
+    - Logs the action in the audit trail
+    
+    Security: Requires admin role, CSRF protection, and explicit confirmation.
+    """
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="Recovery requires explicit confirmation (confirm=true)")
+    
+    users_file = load_users(DATA_DIR)
+    db_user = next((u for u in users_file.users if u.id == user_id), None)
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Prevent admin from recovering their own MFA (they should use the normal disable flow)
+    if db_user.username == user["u"]:
+        raise HTTPException(status_code=400, detail="Cannot recover your own MFA. Use the MFA disable feature instead.")
+    
+    # Store before state for audit
+    before = {
+        "mfa_enabled": db_user.mfa_enabled,
+        "mfa_secret_set": db_user.mfa_secret is not None
+    }
+    
+    # Disable MFA and clear secret
+    db_user.mfa_enabled = False
+    db_user.mfa_secret = None
+    
+    save_users(DATA_DIR, users_file)
+    
+    # Audit the recovery action
+    after = {
+        "mfa_enabled": False,
+        "mfa_secret_set": False,
+        "recovered_by": user["u"]
+    }
+    audit(user, "user.mfa_recover", "user", db_user.id, None, before, after)
+    
+    return {
+        "ok": True,
+        "message": f"MFA has been disabled for user '{db_user.username}'. They can now log in without MFA."
+    }
 
 
 # ---------------- SETTINGS ----------------
