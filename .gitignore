@@ -2,11 +2,7 @@
 /appdata/*
 /UI/*
 /static/*
-/security.md
 /LICENSE
 /CHANGELOG.md
 /CONTRIBUTING.md
-/UX improvement.md
 .env
-PROJECT_REVIEW_REPORT.md
-MFA_SECURITY_AUDIT_REPORT.md

@@ -593,7 +593,7 @@ const state = {
 
   function showMfaSetupRequiredModal() {
     // Blocking modal for when MFA setup is required (MFA_ENFORCE_ALL)
-    let mfaSecret = null;
+    let mfaSessionKey = null;
     const m = modalShell("MFA Setup Required", `
       <div class="space-y-4">
         <div class="text-sm text-zinc-300 bg-yellow-900/20 border border-yellow-800 rounded-lg p-3">
@@ -653,7 +653,7 @@ const state = {
           method: "POST", 
           loadingKey: "mfa-setup" 
         });
-        mfaSecret = setup.secret;
+        mfaSessionKey = setup.session_key;
         
         // Show QR code
         const qrImg = m.querySelector("#mfaQrCode");
@@ -680,7 +680,7 @@ const state = {
         return;
       }
       
-      if (!mfaSecret) {
+      if (!mfaSessionKey) {
         toast("Setup error. Please try again.", { type: "error" });
         return;
       }
@@ -689,7 +689,7 @@ const state = {
       try {
         await api("/api/auth/mfa/complete-setup", { 
           method: "POST", 
-          body: { secret: mfaSecret, code }, 
+          body: { session_key: mfaSessionKey, code }, 
           loadingKey: "mfa-complete" 
         });
         state.me = await api("/api/me", { loadingKey: "me" });
@@ -800,7 +800,7 @@ const state = {
         }
       };
     } else {
-      let mfaSecret = null;
+      let mfaSessionKey = null;
       
       const startBtn = m.querySelector("#startMfaSetupBtn");
       const setupSection = m.querySelector("#mfaSetupSection");
@@ -816,7 +816,7 @@ const state = {
             method: "POST", 
             loadingKey: "mfa-setup" 
           });
-          mfaSecret = setup.secret;
+          mfaSessionKey = setup.session_key;
           
           // Show QR code
           const qrImg = m.querySelector("#mfaQrCode");
@@ -847,7 +847,7 @@ const state = {
           return;
         }
         
-        if (!mfaSecret) {
+        if (!mfaSessionKey) {
           toast("Setup error. Please try again.", { type: "error" });
           return;
         }
@@ -856,7 +856,7 @@ const state = {
         try {
           await api("/api/auth/mfa/complete-setup", { 
             method: "POST", 
-            body: { secret: mfaSecret, code }, 
+            body: { session_key: mfaSessionKey, code }, 
             loadingKey: "mfa-complete" 
           });
           state.me = await api("/api/me", { loadingKey: "me" });
@@ -1061,7 +1061,7 @@ const state = {
     let mfaSetupRequired = false;
     let storedUsername = "";
     let storedPassword = "";
-    let mfaSetupSecret = null;
+    let mfaSetupSessionKey = null;
 
     const performLogin = async () => {
       const username = usernameInput.value.trim();
@@ -1088,13 +1088,13 @@ const state = {
       
       try {
         // If we're in MFA setup mode and have a code, complete setup and login
-        if (mfaSetupRequired && mfaCode && mfaSetupSecret) {
+        if (mfaSetupRequired && mfaCode && mfaSetupSessionKey) {
           const res = await api("/api/auth/mfa/complete-setup-and-login", {
             method: "POST",
             body: {
               username: storedUsername,
               password: storedPassword,
-              secret: mfaSetupSecret,
+              session_key: mfaSetupSessionKey,
               code: mfaCode
             },
             loadingKey: "mfa-complete-login"
@@ -1133,7 +1133,7 @@ const state = {
               loadingKey: "mfa-setup-login"
             });
             
-            mfaSetupSecret = setupRes.secret;
+            mfaSetupSessionKey = setupRes.session_key;
             
             // Show MFA setup UI
             const mfaSetupSection = el(`

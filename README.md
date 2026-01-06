@@ -178,6 +178,37 @@
 - **readwrite**: Can create and modify VLANs and IP assignments
 - **readonly**: View-only access to all data
 
+#### Account Recovery
+
+If a user is locked out due to MFA issues (lost authenticator device, MFA state inconsistency, etc.), administrators can recover their account:
+
+**Using the API:**
+```bash
+POST /api/users/{user_id}/recover-mfa
+Content-Type: application/json
+X-CSRF-Token: <csrf_token>
+
+{
+  "confirm": true
+}
+```
+
+**What the recovery does:**
+- Disables MFA for the affected user
+- Clears the MFA secret
+- Allows the user to log in without MFA
+- Logs the recovery action in the audit trail
+
+**Security:**
+- Requires admin role
+- Requires CSRF token protection
+- Requires explicit confirmation (`confirm: true`)
+- Prevents admins from recovering their own MFA (use normal MFA disable instead)
+- All recovery actions are logged in the audit trail
+
+**After recovery:**
+The user can log in normally without MFA. They can set up MFA again from their account settings if desired.
+
 ### API Endpoints
 
 The application provides a RESTful API. Key endpoints include:
@@ -193,6 +224,7 @@ The application provides a RESTful API. Key endpoints include:
 - `GET /api/icons/list` - List available icons
 - `POST /api/icons/upload-multiple` - Upload multiple icons (admin)
 - `GET /api/audit-logs` - Get audit logs with filtering
+- `POST /api/users/{user_id}/recover-mfa` - Recover user account from MFA lockout (admin only)
 
 For complete API documentation, start the server and visit:
 - Swagger UI: `http://localhost:8080/docs`

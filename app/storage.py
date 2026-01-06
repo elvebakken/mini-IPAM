@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import logging
 import os
 import secrets
 import string
@@ -112,11 +113,37 @@ def save_data(data_dir: Path, data: DataFile) -> None:
     with portalocker.Lock(str(lock_path), mode="w", timeout=5):
         atomic_write_json(path, data.model_dump())
 
+def validate_and_fix_user_mfa_state(user: User) -> bool:
+    """Validate and fix MFA state consistency. Returns True if state was fixed."""
+    fixed = False
+    if user.mfa_enabled and not user.mfa_secret:
+        # Inconsistent state - fix it
+        user.mfa_enabled = False
+        fixed = True
+    if user.mfa_secret and not user.mfa_enabled:
+        # Orphaned secret - clean it up
+        user.mfa_secret = None
+        fixed = True
+    return fixed
+
 def load_users(data_dir: Path) -> UsersFile:
     path = data_dir / "users.json"
     with portalocker.Lock(str(path), mode="r", timeout=5) as f:
         raw = json.load(f)
-    return UsersFile.model_validate(raw)
+    users_file = UsersFile.model_validate(raw)
+    
+    # Validate and fix MFA state for all users
+    fixed_any = False
+    for user in users_file.users:
+        if validate_and_fix_user_mfa_state(user):
+            fixed_any = True
+            logging.warning(f"MFA state inconsistency fixed for user {user.username}")
+    
+    # Save if any fixes were made
+    if fixed_any:
+        save_users(data_dir, users_file)
+    
+    return users_file
 
 def save_users(data_dir: Path, users: UsersFile) -> None:
     path = data_dir / "users.json"
