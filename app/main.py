@@ -380,10 +380,14 @@ def login(payload: LoginRequest, request: Request, response: Response):
     # Check if MFA is required
     mfa_required = is_mfa_required(user.mfa_enabled if hasattr(user, 'mfa_enabled') else False)
     user_mfa_secret = getattr(user, 'mfa_secret', None)
+    user_mfa_enabled = getattr(user, 'mfa_enabled', False)
     
     if mfa_required:
-        # Check if user needs to set up MFA first (MFA_ENFORCE_ALL is enabled but user has no secret)
-        if not user_mfa_secret and MFA_ENFORCE_ALL:
+        # Check if user needs to set up MFA first
+        # This happens when:
+        # 1. MFA_ENFORCE_ALL is enabled but user has no secret, OR
+        # 2. User has mfa_enabled=True but no secret (user was created with MFA enabled but hasn't set it up yet)
+        if not user_mfa_secret and (MFA_ENFORCE_ALL or user_mfa_enabled):
             # User needs to set up MFA - return setup required response
             return {
                 "ok": False,
@@ -437,10 +441,16 @@ def login(payload: LoginRequest, request: Request, response: Response):
     mfa_enabled = getattr(user, 'mfa_enabled', False)
     mfa_secret = getattr(user, 'mfa_secret', None)
     
-    # Check if MFA setup is required (MFA_ENFORCE_ALL is enabled but user hasn't set up MFA)
+    # Check if MFA setup is required
+    # This happens when:
+    # 1. MFA_ENFORCE_ALL is enabled but user hasn't set up MFA, OR
+    # 2. User has mfa_enabled=True but no secret (user was created with MFA enabled but hasn't set it up yet)
     mfa_setup_required = False
-    if MFA_ENABLED and MFA_ENFORCE_ALL:
-        if not mfa_enabled or not mfa_secret:
+    if MFA_ENABLED:
+        if MFA_ENFORCE_ALL and (not mfa_enabled or not mfa_secret):
+            mfa_setup_required = True
+        elif mfa_enabled and not mfa_secret:
+            # User was created with MFA enabled but hasn't set it up yet
             mfa_setup_required = True
     
     return {
@@ -970,19 +980,17 @@ def create_user(payload: CreateUserRequest, user=Depends(require_csrf_and_role({
         raise HTTPException(status_code=400, detail=error_msg)
     
     # Handle MFA setup if requested
+    # Note: MFA secret is NOT generated here - it will be generated at first login
+    # This allows the user to set up MFA when they have their phone available
     mfa_secret = None
-    mfa_qr_code = None
-    mfa_manual_entry_key = None
     mfa_enabled = False
     
     if payload.mfa_enabled:
         if not MFA_ENABLED:
             raise HTTPException(status_code=400, detail="MFA is not enabled on this server")
         
-        # Generate MFA secret and QR code
-        mfa_secret = generate_mfa_secret()
-        mfa_qr_code = generate_mfa_qr_code(mfa_secret, username)
-        mfa_manual_entry_key = format_mfa_secret_for_display(mfa_secret)
+        # Set MFA as enabled but don't generate secret yet
+        # Secret will be generated when user first logs in
         mfa_enabled = True
     
     # Create new user
@@ -1005,7 +1013,7 @@ def create_user(payload: CreateUserRequest, user=Depends(require_csrf_and_role({
     save_users(DATA_DIR, users_file)
     audit(user, "user.create", "user", new_user.id, None, None, {"username": new_user.username, "role": new_user.role, "mfa_enabled": mfa_enabled})
     
-    response_data = {
+    return {
         "ok": True,
         "user": {
             "id": new_user.id,
@@ -1013,27 +1021,6 @@ def create_user(payload: CreateUserRequest, user=Depends(require_csrf_and_role({
             "role": new_user.role
         }
     }
-    
-    # Include MFA setup data if MFA was enabled
-    if mfa_enabled:
-        import time
-        # Store secret in server-side session
-        session_key = f"{username}_{int(time.time()*1000)}_{secrets.token_hex(8)}"
-        with _mfa_setup_lock:
-            _mfa_setup_sessions[session_key] = {
-                "secret": mfa_secret,
-                "username": username,
-                "created_at": time.time(),
-                "expires_at": time.time() + 600  # 10 minutes
-            }
-        
-        response_data["mfa_setup"] = {
-            "session_key": session_key,
-            "qr_code": mfa_qr_code,
-            "manual_entry_key": mfa_manual_entry_key
-        }
-    
-    return response_data
 
 
 @app.patch("/api/users/{user_id}")
