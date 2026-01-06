@@ -46,6 +46,8 @@
   - Custom tags and notes for each assignment
   - Archive assignments without deletion
   - Automatic duplicate detection
+  - Get next available IP address
+  - Get random available IP address
 
 - **Visual Organization**
   - Custom icon upload and management
@@ -69,6 +71,10 @@
   - CSRF token protection
   - Rate limiting on login attempts
   - Comprehensive audit logging
+  - Multi-factor authentication (MFA/2FA) with TOTP
+  - Password strength validation and history
+  - Password expiration policies
+  - MFA requirements for data exports
 
 ### Additional Features
 
@@ -83,6 +89,7 @@
   - Import assignments from CSV, JSON, or Excel files
   - Filtered exports with search and type filtering
   - Backup and restore capabilities
+  - MFA verification for sensitive exports (optional)
 
 - **Audit Logging**
   - Complete activity trail
@@ -178,6 +185,36 @@
 - **readwrite**: Can create and modify VLANs and IP assignments
 - **readonly**: View-only access to all data
 
+#### Multi-Factor Authentication (MFA)
+
+Mini-IPAM supports TOTP-based multi-factor authentication for enhanced security:
+
+- **MFA Setup**: Users can enable MFA from their account settings
+- **MFA Enforcement**: Administrators can require MFA for all users
+- **MFA During Login**: Users can set up MFA during the login process if required
+- **Export Protection**: MFA can be required or verified before exporting sensitive data
+- **Account Recovery**: Administrators can recover user accounts locked out due to MFA issues
+
+**MFA Configuration Options:**
+- `MFA_ENABLED`: Enable MFA functionality (default: `false`)
+- `MFA_ENFORCE_ALL`: Require MFA for all users (default: `false`, automatically enables `MFA_ENABLED`)
+- `MFA_REQUIRED_FOR_EXPORT`: Require MFA to be enabled for exports (default: `false`)
+- `MFA_VERIFY_BEFORE_EXPORT`: Require MFA verification before each export (default: `false`)
+- `MFA_ISSUER_NAME`: Custom issuer name for authenticator apps (default: `"Mini-IPAM"`)
+
+#### Password Policies
+
+Mini-IPAM includes comprehensive password security features:
+
+- **Password Strength**: Real-time password strength checking with feedback
+- **Password Complexity**: Requires uppercase, lowercase, numbers, and special characters (minimum 8 characters)
+- **Password History**: Prevents reuse of recent passwords (configurable, default: last 5 passwords)
+- **Password Expiration**: Optional password expiration policy (configurable in days, default: disabled)
+
+**Password Policy Configuration:**
+- `PASSWORD_HISTORY_COUNT`: Number of previous passwords to remember (default: `5`)
+- `PASSWORD_EXPIRATION_DAYS`: Days until password expires, `0` = disabled (default: `0`)
+
 #### Account Recovery
 
 If a user is locked out due to MFA issues (lost authenticator device, MFA state inconsistency, etc.), administrators can recover their account:
@@ -213,18 +250,60 @@ The user can log in normally without MFA. They can set up MFA again from their a
 
 The application provides a RESTful API. Key endpoints include:
 
+**Authentication & User Management:**
 - `POST /api/auth/login` - User authentication
+- `POST /api/auth/logout` - User logout
+- `POST /api/auth/password-strength` - Check password strength
+- `POST /api/auth/change-password` - Change user password
+- `POST /api/auth/change-username` - Change username
+- `GET /api/me` - Get current user information
+- `GET /api/users` - List all users (admin only)
+- `POST /api/users` - Create new user (admin only)
+- `PATCH /api/users/{user_id}` - Update user (admin only)
+- `DELETE /api/users/{user_id}` - Delete user (admin only)
+- `POST /api/users/{user_id}/change-password` - Admin change user password
+- `POST /api/users/{user_id}/recover-mfa` - Recover user account from MFA lockout (admin only)
+
+**Multi-Factor Authentication:**
+- `POST /api/auth/mfa/setup` - Generate MFA secret and QR code
+- `POST /api/auth/mfa/complete-setup` - Complete MFA setup
+- `POST /api/auth/mfa/disable` - Disable MFA
+- `POST /api/auth/mfa/setup-during-login` - Setup MFA during login
+- `POST /api/auth/mfa/complete-setup-and-login` - Complete MFA setup and login
+
+**VLAN Management:**
 - `GET /api/vlans` - List all VLANs
 - `POST /api/vlans` - Create a new VLAN
 - `GET /api/vlans/{vlan_id}` - Get VLAN details
+- `PATCH /api/vlans/{vlan_id}` - Update VLAN
+- `DELETE /api/vlans/{vlan_id}` - Delete VLAN
+
+**IP Assignments:**
 - `POST /api/vlans/{vlan_id}/assignments` - Create IP assignment
+- `PATCH /api/vlans/{vlan_id}/assignments/{assignment_id}` - Update assignment
+- `DELETE /api/vlans/{vlan_id}/assignments/{assignment_id}` - Delete assignment
 - `GET /api/vlans/{vlan_id}/next-available` - Get next available IP
+- `GET /api/vlans/{vlan_id}/random-available` - Get random available IP
+
+**Data Export & Import:**
+- `GET /api/export/data` - Export all data as JSON
+- `POST /api/export/verify-mfa` - Verify MFA code for export
 - `GET /api/vlans/{vlan_id}/assignments/export` - Export assignments (CSV/JSON/Excel)
 - `POST /api/vlans/{vlan_id}/assignments/import` - Import assignments from file
+
+**Icons:**
 - `GET /api/icons/list` - List available icons
-- `POST /api/icons/upload-multiple` - Upload multiple icons (admin)
+- `GET /api/icons/{icon_name}` - Get icon data
+- `POST /api/icons/normalize` - Normalize uploaded icon
+- `POST /api/icons/upload-multiple` - Upload multiple icons (admin only)
+- `DELETE /api/icons/{icon_name}` - Delete icon (admin only)
+- `GET /icons/{icon_filename}` - Serve icon file
+
+**Settings & Audit:**
+- `GET /api/settings` - Get application settings
+- `PATCH /api/settings` - Update settings (admin only)
 - `GET /api/audit-logs` - Get audit logs with filtering
-- `POST /api/users/{user_id}/recover-mfa` - Recover user account from MFA lockout (admin only)
+- `GET /api/health` - Health check endpoint
 
 For complete API documentation, start the server and visit:
 - Swagger UI: `http://localhost:8080/docs`
@@ -257,12 +336,14 @@ All data is stored in JSON files in the `DATA_DIR` directory:
 
 - **HTTPS/TLS Enforcement**: Automatic HTTP to HTTPS redirect in production
 - **HSTS Header**: Strict-Transport-Security header forces HTTPS connections
-- **Password Security**: Bcrypt hashing with automatic salt generation
+- **Password Security**: Bcrypt hashing with automatic salt generation, strength validation, history tracking, and optional expiration
 - **Session Management**: Secure, HTTP-only cookies with configurable security
 - **CSRF Protection**: Token-based protection for state-changing operations
 - **Rate Limiting**: Prevents brute-force attacks on login endpoints
 - **Input Validation**: Comprehensive validation on all API endpoints
 - **Path Traversal Protection**: Secure file handling for icon uploads
+- **Multi-Factor Authentication**: TOTP-based 2FA with QR code setup
+- **Export Security**: Optional MFA verification for sensitive data exports
 
 For more security information, see [security.md](security.md).
 
@@ -290,6 +371,7 @@ minIPAM/
 │   ├── rate_limit.py    # Rate limiting logic
 │   ├── ipcalc.py        # IP/CIDR calculations
 │   ├── audit.py         # Audit logging
+│   ├── validation.py    # Input validation and sanitization
 │   └── static/          # Web UI files
 │       ├── index.html
 │       ├── app.js
@@ -328,12 +410,17 @@ For a complete list of all environment variables with descriptions, see `.env.ex
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `DATA_DIR` | Directory for data storage | `/data` |
-| `SECRET_KEY` | Secret key for session signing | *Required* |
+| `SECRET_KEY` | Secret key for session signing | *Required* (min 32 chars) |
 | `COOKIE_SECURE` | Use secure cookies (HTTPS only) | `false` |
 | `AUDIT_LOG_RETENTION_DAYS` | Audit log retention period in days | `90` |
-| `SESSION_TIMEOUT_SECONDS` | Session timeout in seconds | `86400` (24 hours) |
+| `SESSION_TIMEOUT_SECONDS` | Session timeout in seconds | `3600` (1 hour) |
 | `MFA_ENABLED` | Enable multi-factor authentication | `false` |
-| `MFA_ENFORCE_ALL` | Require MFA for all users | `false` |
+| `MFA_ENFORCE_ALL` | Require MFA for all users (auto-enables MFA_ENABLED) | `false` |
+| `MFA_REQUIRED_FOR_EXPORT` | Require MFA to be enabled for exports | `false` |
+| `MFA_VERIFY_BEFORE_EXPORT` | Require MFA verification before each export | `false` |
+| `MFA_ISSUER_NAME` | Custom issuer name for authenticator apps | `"Mini-IPAM"` |
+| `PASSWORD_HISTORY_COUNT` | Number of previous passwords to remember | `5` |
+| `PASSWORD_EXPIRATION_DAYS` | Days until password expires (0 = disabled) | `0` |
 
 ---
 
