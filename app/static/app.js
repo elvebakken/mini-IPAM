@@ -2430,10 +2430,7 @@ const state = {
         toast("User created", { type: "success" });
         m.remove();
         
-        // If MFA was enabled, show QR code modal
-        if (response.mfa_setup) {
-          showMfaQrCodeModal(response.mfa_setup, payload.username);
-        }
+        // Note: If MFA was enabled, the user will be prompted to set it up at first login
       } catch (e) {
         toast(e.message, { type: "error" });
       } finally {
