@@ -6,6 +6,7 @@ import bcrypt
 import re
 import base64
 from io import BytesIO
+from pathlib import Path
 from typing import Optional, Callable, Tuple, List
 from datetime import datetime, timezone, timedelta
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
@@ -220,9 +221,15 @@ def calculate_password_strength(password: str) -> dict:
         "feedback": feedback
     }
 
-def create_session_token(username: str, role: str) -> str:
+def create_session_token(username: str, role: str, user_id: str, session_version: int) -> str:
     # Include server instance ID to invalidate sessions on container restart
-    return serializer().dumps({"u": username, "r": role, "i": SERVER_INSTANCE_ID})
+    return serializer().dumps({
+        "u": username,
+        "r": role,
+        "uid": user_id,
+        "sv": session_version,
+        "i": SERVER_INSTANCE_ID,
+    })
 
 def read_session_token(token: str) -> Optional[dict]:
     try:
@@ -242,7 +249,30 @@ def require_user(request: Request) -> dict:
     data = read_session_token(token)
     if not data:
         raise HTTPException(status_code=401, detail="Invalid session")
-    return data
+
+    user_id = data.get("uid")
+    token_session_version = data.get("sv")
+    if not user_id or token_session_version is None:
+        raise HTTPException(status_code=401, detail="Invalid session")
+
+    from .storage import load_users
+
+    data_dir = getattr(request.app.state, "data_dir", None)
+    users_file = load_users(Path(data_dir) if data_dir else Path(os.getenv("DATA_DIR", "/data")))
+    db_user = next((u for u in users_file.users if u.id == user_id), None)
+    if not db_user or db_user.disabled:
+        raise HTTPException(status_code=401, detail="Invalid session")
+
+    if token_session_version != db_user.session_version:
+        raise HTTPException(status_code=401, detail="Invalid session")
+
+    return {
+        **data,
+        "u": db_user.username,
+        "r": db_user.role,
+        "uid": db_user.id,
+        "sv": db_user.session_version,
+    }
 
 def require_role(allowed: set[str]):
     def dep(user=Depends(require_user)):

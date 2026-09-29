@@ -64,6 +64,7 @@ class User(BaseModel):
     mfa_enabled: bool = False
     mfa_secret: Optional[str] = None  # TOTP secret (base32 encoded)
     last_login_at: Optional[str] = None  # ISO timestamp of last successful login
+    session_version: int = 0  # Incremented to invalidate existing sessions
 
 class UsersFile(BaseModel):
     schema_version: int = 1

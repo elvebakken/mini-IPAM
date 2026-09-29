@@ -176,6 +176,7 @@ def _verify_and_mark_export_token(export_token: str, username: str, request: Req
     return token_data
 
 app = FastAPI(title="Mini-IPAM", version="0.1.0")
+app.state.data_dir = DATA_DIR
 
 
 @app.middleware("http")
@@ -334,6 +335,15 @@ def audit(user: dict, action: str, entity: str, entity_id: str, vlan_id: Optiona
     append_audit(DATA_DIR / "audit.log", entry)
 
 
+def bump_session_version(user: User) -> None:
+    user.session_version += 1
+
+
+def refresh_session_cookie(response: Response, user: User) -> None:
+    token = create_session_token(user.username, user.role, user.id, user.session_version)
+    response.set_cookie(COOKIE_NAME, token, **cookie_params())
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True}
@@ -427,8 +437,7 @@ def login(payload: LoginRequest, request: Request, response: Response):
     # Successful login - clear rate limiting state for this username
     record_successful_login(DATA_DIR, client_ip, username)
 
-    token = create_session_token(user.username, user.role)
-    response.set_cookie(COOKIE_NAME, token, **cookie_params())
+    refresh_session_cookie(response, user)
     
     # Set CSRF token cookie
     csrf_token = generate_csrf_token()
@@ -535,7 +544,7 @@ def mfa_setup(request: Request, user=Depends(require_csrf)):
 
 
 @app.post("/api/auth/mfa/complete-setup")
-def mfa_complete_setup(payload: MfaCompleteSetupRequest, user=Depends(require_csrf)):
+def mfa_complete_setup(payload: MfaCompleteSetupRequest, response: Response, user=Depends(require_csrf)):
     """Complete MFA setup: verify code and enable MFA with the stored secret."""
     import time
     if not MFA_ENABLED:
@@ -580,19 +589,21 @@ def mfa_complete_setup(payload: MfaCompleteSetupRequest, user=Depends(require_cs
     # Enable MFA
     db_user.mfa_enabled = True
     db_user.mfa_secret = secret
+    bump_session_version(db_user)
     
     # Clear setup session
     with _mfa_setup_lock:
         _mfa_setup_sessions.pop(session_key, None)
     
     save_users(DATA_DIR, users_file)
+    refresh_session_cookie(response, db_user)
     audit(user, "user.mfa_enable", "user", db_user.id, None, None, {"mfa_enabled": True})
     
     return {"ok": True, "message": "MFA enabled successfully"}
 
 
 @app.post("/api/auth/mfa/disable")
-def mfa_disable(payload: MfaDisableRequest, user=Depends(require_csrf)):
+def mfa_disable(payload: MfaDisableRequest, response: Response, user=Depends(require_csrf)):
     """Disable MFA for the current user (requires password verification)."""
     if not MFA_ENABLED:
         raise HTTPException(status_code=403, detail="MFA is not enabled")
@@ -617,8 +628,10 @@ def mfa_disable(payload: MfaDisableRequest, user=Depends(require_csrf)):
     # Disable MFA
     db_user.mfa_enabled = False
     db_user.mfa_secret = None
+    bump_session_version(db_user)
     
     save_users(DATA_DIR, users_file)
+    refresh_session_cookie(response, db_user)
     audit(user, "user.mfa_disable", "user", db_user.id, None, {"mfa_enabled": True}, {"mfa_enabled": False})
     
     return {"ok": True, "message": "MFA disabled successfully"}
@@ -768,6 +781,7 @@ def mfa_complete_setup_and_login(payload: MfaCompleteSetupAndLoginRequest, reque
     # Enable MFA for the user
     user.mfa_enabled = True
     user.mfa_secret = secret
+    bump_session_version(user)
     
     # Clear setup session
     with _mfa_setup_lock:
@@ -799,8 +813,7 @@ def mfa_complete_setup_and_login(payload: MfaCompleteSetupAndLoginRequest, reque
     record_successful_login(DATA_DIR, client_ip, username)
     
     # Create session token
-    token = create_session_token(user.username, user.role)
-    response.set_cookie(COOKIE_NAME, token, **cookie_params())
+    refresh_session_cookie(response, user)
     
     # Set CSRF token cookie
     csrf_token = generate_csrf_token()
@@ -835,7 +848,7 @@ def mfa_complete_setup_and_login(payload: MfaCompleteSetupAndLoginRequest, reque
 
 
 @app.post("/api/auth/change-password")
-def change_password(payload: ChangePasswordRequest, user=Depends(require_csrf)):
+def change_password(payload: ChangePasswordRequest, response: Response, user=Depends(require_csrf)):
     users_file = load_users(DATA_DIR)
     db_user = next((u for u in users_file.users if u.username == user["u"]), None)
     if not db_user or db_user.disabled:
@@ -862,8 +875,10 @@ def change_password(payload: ChangePasswordRequest, user=Depends(require_csrf)):
     db_user.password_bcrypt = hash_password(payload.new_password)
     db_user.password_change_required = False
     db_user.password_changed_at = utcnow_iso()
+    bump_session_version(db_user)
     
     save_users(DATA_DIR, users_file)
+    refresh_session_cookie(response, db_user)
     audit(user, "user.password_change", "user", db_user.id, None, None, {"password_changed": True})
     return {"ok": True}
 
@@ -886,13 +901,13 @@ def change_username(payload: ChangeUsernameRequest, response: Response, user=Dep
     
     old_username = db_user.username
     db_user.username = new_username
+    bump_session_version(db_user)
     
     save_users(DATA_DIR, users_file)
     audit(user, "user.username_change", "user", db_user.id, None, {"old_username": old_username}, {"new_username": new_username})
     
     # Update session token with new username
-    token = create_session_token(new_username, db_user.role)
-    response.set_cookie(COOKIE_NAME, token, **cookie_params())
+    refresh_session_cookie(response, db_user)
     return {"ok": True, "username": new_username}
 
 
@@ -1006,7 +1021,8 @@ def create_user(payload: CreateUserRequest, user=Depends(require_csrf_and_role({
         password_history=[],
         password_changed_at=now,
         mfa_enabled=mfa_enabled,
-        mfa_secret=mfa_secret
+        mfa_secret=mfa_secret,
+        session_version=0
     )
     
     users_file.users.append(new_user)
@@ -1035,15 +1051,17 @@ def update_user(user_id: str, payload: PatchUserRequest, user=Depends(require_cs
     after = {}
     
     if payload.disabled is not None:
-        db_user.disabled = payload.disabled
-        after["disabled"] = db_user.disabled
+        if db_user.disabled != payload.disabled:
+            db_user.disabled = payload.disabled
+            after["disabled"] = db_user.disabled
     
     if payload.role is not None:
         # Prevent admin from removing their own admin role
         if db_user.username == user["u"] and payload.role != "admin":
             raise HTTPException(status_code=400, detail="Cannot remove your own admin role")
-        db_user.role = payload.role
-        after["role"] = db_user.role
+        if db_user.role != payload.role:
+            db_user.role = payload.role
+            after["role"] = db_user.role
     
     if payload.username is not None:
         # Sanitize and validate username
@@ -1056,9 +1074,13 @@ def update_user(user_id: str, payload: PatchUserRequest, user=Depends(require_cs
             raise HTTPException(status_code=409, detail="Username already exists")
         
         old_username = db_user.username
-        db_user.username = new_username
-        after["username"] = new_username
-        before["username"] = old_username
+        if old_username != new_username:
+            db_user.username = new_username
+            after["username"] = new_username
+            before["username"] = old_username
+    
+    if after:
+        bump_session_version(db_user)
     
     save_users(DATA_DIR, users_file)
     audit(user, "user.update", "user", db_user.id, None, before, after)
@@ -1110,6 +1132,7 @@ def admin_change_user_password(user_id: str, payload: AdminChangePasswordRequest
     db_user.password_bcrypt = hash_password(payload.new_password)
     db_user.password_change_required = False
     db_user.password_changed_at = utcnow_iso()
+    bump_session_version(db_user)
     
     save_users(DATA_DIR, users_file)
     audit(user, "user.password_change_admin", "user", db_user.id, None, None, {"password_changed": True})
@@ -1155,6 +1178,7 @@ def admin_recover_user_mfa(user_id: str, payload: AdminRecoverMfaRequest, user=D
     # Disable MFA and clear secret
     db_user.mfa_enabled = False
     db_user.mfa_secret = None
+    bump_session_version(db_user)
     
     save_users(DATA_DIR, users_file)
     

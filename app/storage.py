@@ -73,7 +73,8 @@ def ensure_admin_user(data_dir: Path) -> None:
         password_history=[],
         password_changed_at=now,
         mfa_enabled=False,
-        mfa_secret=None
+        mfa_secret=None,
+        session_version=0
     )
     
     users_file.users.append(admin_user)
@@ -119,10 +120,12 @@ def validate_and_fix_user_mfa_state(user: User) -> bool:
     if user.mfa_enabled and not user.mfa_secret:
         # Inconsistent state - fix it
         user.mfa_enabled = False
+        user.session_version += 1
         fixed = True
     if user.mfa_secret and not user.mfa_enabled:
         # Orphaned secret - clean it up
         user.mfa_secret = None
+        user.session_version += 1
         fixed = True
     return fixed
 
